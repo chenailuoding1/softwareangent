@@ -1,4 +1,4 @@
-name: Python Unit Test
+name: Python Advanced CI
 
 on:
   push:
@@ -9,27 +9,132 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11']
+        postgres-version: [14]
+        redis-version: [7]
+        mysql-version: ['8.0', '5.7']
+      fail-fast: false
+
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres-version }}
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:${{ matrix.redis-version }}
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      mysql:
+        image: mysql:${{ matrix.mysql-version }}
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: test
+          MYSQL_USER: test
+          MYSQL_PASSWORD: test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -uroot -proot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=256m
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/pip
+            venv/
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get -qq install libpq-dev libmysqlclient-dev
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pytest pytest-xdist coverage safety bandit
+          pip install mysqlclient psycopg2-binary redis
 
-      - name: Run tests and save log
+      - name: Security checks
         run: |
-          pytest > test-results.log 2>&1 || true
+          pip install safety bandit
+          safety check -r requirements.txt --full-report
+          bandit -r .
 
-      - name: Upload test log as artifact
+      - name: Run tests
+        env:
+          POSTGRES_URL: postgresql://test:test@localhost:5432/test
+          REDIS_URL: redis://localhost:6379/0
+          MYSQL_URL: mysql://test:test@localhost:3306/test
+        run: |
+          pytest -v \
+            --cov=src \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --junitxml=junit.xml \
+            -n auto \
+            2>&1 | tee test-results.log
+
+      - name: Upload coverage to Codecov
+        if: github.event_name == 'push'
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+
+      - name: Upload test artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: test-log
-          path: test-results.log
+          name: test-artifacts-py${{ matrix.python-version }}-mysql${{ matrix.mysql-version }}
+          path: |
+            test-results.log
+            coverage.xml
+            junit.xml
+
+  notify:
+    needs: test
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Slack notification
+        uses: act10ns/slack@v1
+        with:
+          status: ${{ job.status }}
+          fields: workflow,job,commit,message,author
+          mention: here
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
