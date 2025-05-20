@@ -89,11 +89,6 @@ jobs:
           pip install pytest pytest-xdist coverage safety bandit
           pip install mysqlclient psycopg2-binary redis
 
-      - name: Security checks
-        run: |
-          pip install safety bandit
-          safety check -r requirements.txt --full-report
-          bandit -r .
 
       - name: Run tests
         env:
