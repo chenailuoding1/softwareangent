@@ -3,7 +3,20 @@ from unittest.mock import patch, MagicMock
 from app.controllers.user_controller import router
 
 client = TestClient(router)
+import sys
+import os
 
+# 获取当前测试文件的绝对路径（假设测试文件位于 src/test/）
+current_file_path = os.path.abspath(__file__)
+# 测试文件所在目录：src/test/
+test_dir = os.path.dirname(current_file_path)
+# src/ 目录
+src_dir = os.path.dirname(test_dir)
+# 项目根目录（src 的父目录）
+project_root = os.path.dirname(src_dir)
+
+# 将项目根目录添加到 sys.path
+sys.path.insert(0, project_root)
 @patch("app.controllers.user_controller.UserService")
 def test_create_user_success(mock_service):
     # Mock服务层返回
