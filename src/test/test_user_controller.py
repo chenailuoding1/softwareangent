@@ -1,9 +1,6 @@
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
 from app.controllers.user_controller import router
-import sys
-import os
-
 
 client = TestClient(router)
 
