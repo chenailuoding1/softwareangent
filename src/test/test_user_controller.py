@@ -1,60 +1,69 @@
-from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock
-from app.controllers.user_controller import router
 
-client = TestClient(router)
-import sys
-import os
+import pytest
+from unittest.mock import MagicMock
+from app.services.user_service import UserService
+from app.models.user import User
 
-# 获取当前测试文件的绝对路径（假设测试文件位于 src/test/）
-current_file_path = os.path.abspath(__file__)
-# 测试文件所在目录：src/test/
-test_dir = os.path.dirname(current_file_path)
-# src/ 目录
-src_dir = os.path.dirname(test_dir)
-# 项目根目录（src 的父目录）
-project_root = os.path.dirname(src_dir)
+# 模拟哈希策略（你可能使用 passlib）
+def fake_hash(password):
+    return "hashed_" + password
 
-# 将项目根目录添加到 sys.path
-sys.path.insert(0, project_root)
-@patch("app.controllers.user_controller.UserService")
-def test_create_user_success(mock_service):
-    # Mock服务层返回
-    mock_user = MagicMock()
-    mock_user.to_dict.return_value = {
-        "id": 1,
-        "username": "testuser",
-        "email": "test@example.com"
-    }
-    mock_service.create_user.return_value = mock_user
+def fake_verify(password, hashed):
+    return hashed == "hashed_" + password
 
-    # 执行请求
-    response = client.post(
-        "/users/",
-        json={
-            "username": "testuser",
-            "email": "test@example.com",
-            "password": "secret"
-        }
-    )
 
-    # 验证
-    assert response.status_code == 200
-    assert response.json()["username"] == "testuser"
-    mock_service.create_user.assert_called_once()
+@pytest.fixture
+def mock_db():
+    return MagicMock()
 
-@patch("app.controllers.user_controller.UserService")
-def test_login_failure(mock_service):
-    # 配置mock返回空值
-    mock_service.authenticate_user.return_value = None
+@pytest.fixture
+def mock_user():
+    return User(id=1, username="testuser", email="test@example.com", hashed_password=fake_hash("123456"))
 
-    response = client.post(
-        "/login",
-        json={
-            "username": "wronguser",
-            "password": "wrongpass"
-        }
-    )
+def test_create_user_success(mock_db):
+    mock_db.query().filter().first.return_value = None  # 模拟用户名不存在
 
-    assert response.status_code == 401
-    assert "Invalid credentials" in response.text
+    result = UserService.create_user(mock_db, "newuser", "new@example.com", "mypassword")
+
+    assert result.username == "newuser"
+    assert result.email == "new@example.com"
+    assert result.hashed_password == fake_hash("mypassword")
+    mock_db.add.assert_called_once()
+    mock_db.commit.assert_called_once()
+    mock_db.refresh.assert_called_once_with(result)
+
+
+def test_create_user_duplicate(mock_db):
+    # 模拟已有用户名
+    mock_db.query().filter().first.return_value = User(username="testuser")
+
+    with pytest.raises(ValueError) as excinfo:
+        UserService.create_user(mock_db, "testuser", "abc@example.com", "123")
+
+    assert "Username already exists" in str(excinfo.value)
+
+
+def test_authenticate_user_success(mock_db, mock_user):
+    mock_user.hashed_password = fake_hash("123456")
+    mock_db.query().filter().first.return_value = mock_user
+
+    # monkey patch密码验证函数
+    UserService.get_user_by_username = lambda db, username: mock_user
+
+    result = UserService.authenticate_user(mock_db, "testuser", "123456")
+    assert result == mock_user
+
+
+def test_authenticate_user_fail_wrong_password(mock_db, mock_user):
+    mock_user.hashed_password = fake_hash("correctpass")
+    UserService.get_user_by_username = lambda db, username: mock_user
+
+    result = UserService.authenticate_user(mock_db, "testuser", "wrongpass")
+    assert result is None
+
+
+def test_authenticate_user_fail_not_found(mock_db):
+    UserService.get_user_by_username = lambda db, username: None
+
+    result = UserService.authenticate_user(mock_db, "nouser", "any")
+    assert result is None
